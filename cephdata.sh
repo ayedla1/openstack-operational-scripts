@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "This script can be ran on any ceph node and this works on ceph Luminous version. results may vary depending on your ceph version"
+echo "This script can be ran on any ceph node and this works on ceph Luminous version. Results may vary depending on your ceph version"
 echo "Collecting ceph cluster data"
 a=$(hostname)
 b=$(date +"%m-%d-%y")
