@@ -4,7 +4,7 @@ echo "Collecting ceph cluster data"
 a=$(hostname)
 b=$(date +"%m-%d-%y")
 c=$(hostname -d | cut -d "." -f 1)
-mkdir -p cephinfo.$a
+mkdir -p $pwd/cephinfo.$a
 cd cephinfo.$a
 #sudo lshw > lshw_$a.$c.txt 
 #sudo dmidecode >dmidecode_$a.$c.txt 
@@ -44,6 +44,6 @@ echo "Collecting ceph auth list..."
 sudo ceph auth list -f json | sed 's/AQ[^=]*==/KEY/g' > ceph_auth_ls.$c.json
 
 cd ..
-tar -cjvf cephdata.$c.$b.tar.bz2 /home/shrinivasmira/cephinfo.$a
+tar -cjvf cephdata.$c.$b.tar.bz2 $pwd/cephinfo.$a
 sudo rm -r cephinfo.$a
 
