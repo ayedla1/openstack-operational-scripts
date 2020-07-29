@@ -44,6 +44,6 @@ echo "Collecting ceph auth list..."
 sudo ceph auth list  | sed 's/AQ[^=]*==/KEY/g' > ceph_auth_ls.$c.txt
 
 cd ..
-tar -cjvf cephdata.$c.$b.tar.bz2 cephinfo.$a
+sudo tar -cjvf cephdata.$c.$b.tar.bz2 cephinfo.$a
 sudo rm -r cephinfo.$a
 
