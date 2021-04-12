@@ -3,7 +3,13 @@ printf "Make sure to run the script from salt-master node\n"
 if  [[  $# == 0 ]];  then
       echo "Usage is: ./upgrade-compute.sh cmp001 cmp002.. cmp**"; exit;
 elif [[ $# -gt 2 ]] && [[ $# -le 8 ]]; then
-      echo "You are trying to Upgrade more than $# computes at the same time.Careful before proceed"
+      echo "You are trying to Upgrade more than $# computes at the same time.Make sure before proceeding further"
+      read -p "Are you sure you want to proceed?(y/N)" prompt
+      if [[ $prompt == "y" || $prompt == "Y" || $prompt == "yes" || $prompt == "Yes" ]]; then
+         upgrade_compute
+      else
+         exit;
+      fi
 elif [[ $# -gt 8 ]]; then
       echo "Too Many arguments have passed. Upgrade of $# computes on a single stretch would cause heavy load and migration issues. Less than 3 compute node upgrade is recommended"; exit;
 fi
@@ -18,7 +24,14 @@ function silence_alerts_for_nodes(){
   for i in $@; do
      curl   http://$url:15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Team","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"${i}.*"'"}]}'; done
 }
-silence_alerts_for_nodes $@
+#silence_alerts_for_nodes
+
+## Delete all the silences created By this upgrade script
+function delete_silence_alerts_for_nodes(){
+  echo "Deleting the silences created for the nodes by the script earlier....."
+  curl http://$url:15011/api/v1/silences | jq -r  '.data[]|select(.createdBy == "Upgrade Script")|select(.status.state == "active")|.id' | xargs -I % curl -X DELETE http://$url:15011/api/v1/silence/%
+}
+#delete_silence_alerts_for_nodes
 
 ## This function is to disable nova-compute service for the compute nodes provided in the arguments
 function disable_compute_service(){
@@ -37,11 +50,13 @@ function enable_compute_service(){
 ###This function is to live-migrate workloads from the compute that are going to be upgraded
 function host_evacuate_live(){
     for i in $@;do
-        sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; nova host-evacuate-live '${i}' '
+       sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '${i}' --status ACTIVE ; for j in $(openstack hypervisor list -c "Hypervisor Hostname" -f value | grep '${i}'); do echo "Instance count for $j :"; openstack hypervisor show $j -c running_vms -f value ; done'
+      sudo salt -C ''"${i}*"'' cmd.run "virsh list --all |grep running"
+       # sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; nova host-evacuate-live '${i}' '
     done
 
 }
-host_evacuate_live
+#host_evacuate_live
 
 ##Upgrade Compute nodes OS and enable services
 function pipeline_upgrade_compute(){
@@ -75,13 +90,14 @@ EOF
    done
 
 }
-pipeline_upgrade_compute_os
+#pipeline_upgrade_compute
 
-## Upgrade compute 
+## Upgrade compute steps
 function upgrade_compute(){
    silence_alerts_for_nodes
    disable_compute_service
    host_evacuate_live
    enable_compute_service
    pipeline_upgrade_compute
+   delete_silence_alerts_for_nodes
 }
