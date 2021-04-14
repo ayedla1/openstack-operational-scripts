@@ -12,7 +12,7 @@ function start_script(){
 if  [[  $# == 0 ]];  then
       echo "Usage is: ./upgrade-compute.sh cmp001 cmp002.. cmp**"; exit;
 elif [[ $# -gt 2 ]] && [[ $# -le 4 ]]; then
-      echo "You are trying to Upgrade more than $# computes at the same time.Make sure before proceeding further"
+      echo "You are trying to Upgrade more than $# computes at the same time. Make sure before proceeding further"
       read -p "Are you sure you want to proceed?(y/N)" prompt
       if [[ $prompt == "y" || $prompt == "Y" || $prompt == "yes" || $prompt == "Yes" || $prompt == "YES" ]]; then
          echo "The Compute nodes that are going to be updated are: "$@""
@@ -23,7 +23,7 @@ elif [[ $# -gt 2 ]] && [[ $# -le 4 ]]; then
          exit;
       fi
 elif [[ $# -gt 8 ]]; then
-      echo "Too Many arguments have passed. Upgrade of $# computes on a single stretch would cause heavy load and migration issues. Less than 3 compute node upgrade is recommended"; exit;
+      echo "Too Many arguments have passed. Upgrade of $# computes on a single stretch would cause heavy load and migration issues."; exit;
 else
       echo "The Compute nodes that are going to be updated are: "$@""
       for i in "$@"; do                     #### this for loop can be removed if we need to upgrade computes in parallel ######
@@ -67,21 +67,19 @@ function silence_alerts_for_nodes(){
   starts=$(date -u  '+%FT%T.%3NZ')
   end=$(date -u -d '+3 hour' '+%FT%T.%3NZ')
   for i in "$@"; do
-     echo "------- Silencing all alerts for node ${i} -------"
      {
      echo "------- Silencing all alerts for node ${i} -------"
      curl -s   http://$url:15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Team","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"${i}.*"'"}]}'
-     } >> /tmp/$i.log
+     } | tee -a /tmp/$i.log
   done
 }
 
 ############ Delete all the silences created By this upgrade script ###############
 function delete_silence_alerts_for_nodes(){
-echo "---------- Deleting the silences created for the nodes by the script earlier --------"
   for i ; do {
   echo "---------- Deleting the silences created for the nodes by the script earlier --------"
   curl -s http://$url:15011/api/v1/silences | jq -r  '.data[]|select(.createdBy == "Upgrade Script")|select(.status.state == "active")|.id' | xargs -I % curl -X DELETE http://$url:15011/api/v1/silence/%
-   } >> /tmp/$i.log
+   } |tee -a  /tmp/$i.log
  done
 }
 
@@ -176,9 +174,9 @@ function upgrade_compute(){
    silence_alerts_for_nodes  "$@"
    disable_compute_service  "$@"
    host_evacuate_live  "$@"
-   enable_compute_service   "$@"
    pipeline_upgrade_compute  "$@"
    delete_silence_alerts_for_nodes   "$@"
+   enable_compute_service   "$@"
 #   delete_log_file  "$@"
 }
    start_script "$@"
