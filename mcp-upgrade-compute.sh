@@ -69,7 +69,7 @@ function silence_alerts_for_nodes(){
   for i in "$@"; do
      {
      echo "------- Silencing all alerts for node ${i} -------"
-     curl -s   http://$url:15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Team","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"${i}.*"'"}]}'
+     curl -s   http://$url:15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Script","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"${i}.*"'"}]}'
      } | tee -a /tmp/$i.log
   done
 }
