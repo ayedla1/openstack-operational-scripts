@@ -1,4 +1,7 @@
 #!/bin/bash
+############
+SCRIPT IS STILL NOT COMPLETE AND ALSO UNDER TESTING
+############
 printf "Make sure to run the script from salt-master node\n"
 printf "Recommended to run the script in a  "SCREEN" or "TMUX" session\n"
 read -p "you want to proceed?(y/N)" prompt
@@ -13,7 +16,7 @@ elif [[ $# -gt 2 ]] && [[ $# -le 4 ]]; then
       read -p "Are you sure you want to proceed?(y/N)" prompt
       if [[ $prompt == "y" || $prompt == "Y" || $prompt == "yes" || $prompt == "Yes" || $prompt == "YES" ]]; then
          echo "The Compute nodes that are going to be updated are: "$@""
-         for i in "$@"; do
+         for i in "$@"; do                  #### this for loop can be removed if we need to upgrade computes in parallel ######
            upgrade_compute $i
          done
       else
@@ -23,7 +26,7 @@ elif [[ $# -gt 8 ]]; then
       echo "Too Many arguments have passed. Upgrade of $# computes on a single stretch would cause heavy load and migration issues. Less than 3 compute node upgrade is recommended"; exit;
 else
       echo "The Compute nodes that are going to be updated are: "$@""
-      for i in "$@"; do
+      for i in "$@"; do                     #### this for loop can be removed if we need to upgrade computes in parallel ######
         upgrade_compute $i
       done
 fi
@@ -57,7 +60,7 @@ else
 fi
 }
 
-########### This function is for silencing all alerts for a node in ALertManager ###############
+########### This function is for silencing all alerts for a node in AlertManager ###############
 function silence_alerts_for_nodes(){
   echo "silencing all alerts from nodes "$@" for 3 hours"
   url=$(sudo salt-call pillar.get linux:network:host:mon:address --out txt | awk '{print $2}')
@@ -86,7 +89,7 @@ echo "---------- Deleting the silences created for the nodes by the script earli
 function disable_compute_service(){
    echo "---------- Disbaling nova-compute  service for computes "$@" --------"
    for i in "$@"; do {
-      echo "--------- Disbaling nova-compute  service for computes "$@" --------"
+      echo "--------- Disabling nova-compute  service for computes "$@" --------"
       sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack compute service set --disable --disable-reason "Compute node upgrade"  '${i}' nova-compute; nova service-list'
    } >> /tmp/$i.log
    done
