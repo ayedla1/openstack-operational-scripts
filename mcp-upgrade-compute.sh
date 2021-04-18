@@ -8,8 +8,8 @@ exec > >(tee -ia /tmp/script.log)
 
 ######## Trap unexpected signals ######
 trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
-trap 'echo "Script was stopped.\"${last_command}\" command  with exit code $? ."; exit_status' 0 1 2 3  EXIT
-
+trap 'echo "Script was stopped.\"${last_command}\" command  with exit code $? ."; exit_status' 0 1 2 3 EXIT
+#trap 'echo "Crucial script running.Press Ctrl-Z to stop and resume later"' HUP INT QUIT
 ########### Input arguments ############
 function start_script(){
 if  [[  $# == 0 ]];  then
@@ -52,13 +52,13 @@ function delete_log_file(){
 }
 
 ########## Save log files created by script #######
-function save_log_files(){
+function save_log_file(){
    mkdir /tmp/upgrade-compute-script.log-$(date  +%F-%T)
    cd /tmp/upgrade-script.log-$(date  +%F-%T)
    for i in "$@"; do
       tar -cvzf /tmp/${i}.tar.gz /tmp/${i}.log
       mv /tmp/${i}.tar.gz .
-      rm -f /tmp/${i}.log
+    #  rm -f /tmp/${i}.log
    done
    cd
 }
@@ -73,7 +73,7 @@ function silence_alerts_for_nodes(){
      {
      echo "------- Silencing all alerts for node ${i} -------"
      curl -s   http://"$url":15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Script","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"${i}.*"'"}]}'
-     } | tee -a /tmp/${i}.log
+     } >>  /tmp/${i}.log
   done
 
 }
@@ -93,7 +93,7 @@ function disable_compute_service(){
    for i in "$@"; do {
       echo "--------- Disabling nova-compute  service for compute ${i} --------"
       sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack compute service set --disable --disable-reason "Compute node upgrade"  '${i}' nova-compute; nova service-list'
-   } | tee -a /tmp/${i}.log
+   } >>  /tmp/${i}.log
    done
 }
 
@@ -103,7 +103,7 @@ function enable_compute_service(){
    for i in "$@"; do {
       echo "-------- Enabling nova-compute service for compute ${i} ------"
       sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack compute service set --enable   '${i}' nova-compute; nova service-list'
-    } | tee -a /tmp/${i}.log
+    } >>  /tmp/${i}.log
     done
 }
 
@@ -121,29 +121,55 @@ function host_evacuate_live(){
       # sudo salt -C ''${i}*'' cmd.run "virsh list --all |grep running"
        echo " ------ Live evacuate all instances on compute ${i} ------"
        # sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; nova host-evacuate-live '${i}' '
-       } | tee -a /tmp/${i}.log
+       } >>  /tmp/${i}.log
  # sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; nova host-evacuate-live '${i}' '
     done
 
 }
 
 ############## This function is to provide live-migration options ###############
-#function live_migration(){
-
-#}
+function check_instances_status(){
+for i in "$@" ; do
+ echo " ------ Checking instance status in ${i} -----"
+ {
+#  sudo salt -C 'ctl01*' cmd.run '. /root/keystonercv3; for status in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -vi active | awk '"'NR >2 $4{print \$4}'"') ;do if [ "$status" = "SUSPENDED" ]; then for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i suspended | awk '"'$2{print \$2}'"');do echo " ---- Resuming $instance ----"; nova resume $instance; done;  elif [ "$status" = "SHUTOFF" ]; then for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i shutoff |awk '"'$2{print \$2}'"') ; do  echo " ---- Migrating $instance -----"; nova migrate --poll $instance; nova resize-confirm $instance;done;fi; done'
+ sudo salt -C 'ctl01*' cmd.run '. /root/keystonercv3;
+        for status in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -vi active | awk '"'NR >2 $4{print \$4}'"') ;do
+           if [ "$status" = "SUSPENDED" ]; then
+              for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i suspended | awk '"'$2{print \$2}'"');do
+                echo " ---- Resuming $instance ----"
+                nova resume $instance
+              done
+           elif [ "$status" = "SHUTOFF" ]; then
+              for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i shutoff |awk '"'$2{print \$2}'"') ; do
+              	 echo " ---- Migrating $instance -----"
+              	 nova migrate --poll $instance
+              	 nova resize-confirm $instance
+              done
+            fi
+        done'
+} >> /tmp/${i}.log
+done
+}
 
 ##############  Upgrade Compute nodes OS and enable services ##################
 function pipeline_upgrade_compute(){
    for i in "$@";do
       ssh -q -o "ServerAliveInterval=240" -o "StrictHostKeyChecking=no" ${i} << EOF
         uptime
+      echo $hostname
+      if [[ -z "$(contrail-status)" ]]; then
+         echo "contrail is not present"
+      fi
 #     sudo salt-call -l quiet --state-verbose=false saltutil.sync_all
 #     sudo salt-call -l quiet --state-verbose=false saltutil.refresh_pillar
 #     sudo salt-call state.apply -l quiet --state-verbose=false linux.system.repo
 #     sudo export DEBIAN_FRONTEND=noninteractive
 #     sudo apt-get update
 #     sudo apt-get -y upgrade
-#     sudo apt-get -y --allow-downgrades dist-upgrade -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
+#     sudo apt-get -y -q --allow-downgrades -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
+#     sudo touch /tmp/rebooting
+#     sudo echo " $hostname is going to be rebooted"
 #     sudo reboot
 EOF
 #sleep 1
@@ -180,6 +206,7 @@ function pre_compute_upgrade(){
    silence_alerts_for_nodes  "$@"
    disable_compute_service  "$@"
    host_evacuate_live  "$@"
+   check_instances_status "$@"
 }
 function compute_upgrade(){
       pipeline_upgrade_compute  "$@"
