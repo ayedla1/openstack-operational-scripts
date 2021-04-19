@@ -37,10 +37,11 @@ fi
 
 ########### Create log files speific to arguments provided ###########
 function create_log_file(){
-echo "------- Creating log files for each node in /tmp/----------"
+echo " Creating log files for each node in /tmp/ "
   for i in "$@"; do
      touch /tmp/${i}.log
      done
+echo "Upgrade of "$@" is in progress ..... [1%]"
 }
 
 ########## Delete log files created by the script ##########
@@ -53,14 +54,15 @@ function delete_log_file(){
 
 ########## Save log files created by script #######
 function save_log_file(){
-   mkdir /tmp/upgrade-compute-script.log-$(date  +%F-%T)
-   cd /tmp/upgrade-script.log-$(date  +%F-%T)
+   mkdir /tmp/upgrade-compute-script.log-$(date  +%Y%m%d-%H%M)
+   cd /tmp/upgrade-compute-script.log-$(date -u +%Y%m%d-%H%M)
    for i in "$@"; do
       tar -cvzf /tmp/${i}.tar.gz /tmp/${i}.log
       mv /tmp/${i}.tar.gz .
     #  rm -f /tmp/${i}.log
    done
    cd
+   echo "Upgrade of "$@" is in progress ..... [100%]"
 }
 
 ########### This function is for silencing all alerts for a node in AlertManager ###############
@@ -75,62 +77,64 @@ function silence_alerts_for_nodes(){
      curl -s   http://"$url":15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Script","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"${i}.*"'"}]}'
      } >>  /tmp/${i}.log
   done
-
+  echo "Upgrade of "$@" is in progress ..... [10%]"
 }
 
 ############ Delete all the silences created By this upgrade script ###############
 function delete_silence_alerts_for_nodes(){
   for i ; do {
-  echo "---------- Deleting the silence created for the node ${i} by the script earlier --------"
+  echo " Deleting the silence created for the node ${i} by the script earlier "
   curl -s http://"$url":15011/api/v1/silences | jq -r  '.data[]|select(.createdBy == "Upgrade Script")|select(.status.state == "active")|.id' | xargs -I {} curl -X DELETE http://"$url":15011/api/v1/silence/{}
    } |tee -a  /tmp/${i}.log
  done
+  echo "Upgrade of "$@" is in progress ..... [85%]"
 }
 
 ############## This function is to disable nova-compute service for the compute nodes #############
 function disable_compute_service(){
-   echo "---------- Disbaling nova-compute  service for computes $@ --------"
+   echo " Disbaling nova-compute  service for computes $@ "
    for i in "$@"; do {
       echo "--------- Disabling nova-compute  service for compute ${i} --------"
       sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack compute service set --disable --disable-reason "Compute node upgrade"  '${i}' nova-compute; nova service-list'
    } >>  /tmp/${i}.log
    done
+   echo "Upgrade of "$@" is in progress ..... [15%]"
 }
 
 ############## This function is to enable nova-compute service for the compute nodes #############
 function enable_compute_service(){
-   echo "------- Enabling nova-compute service for computes $@ -----"
+   echo " Enabling nova-compute service for computes $@ "
    for i in "$@"; do {
       echo "-------- Enabling nova-compute service for compute ${i} ------"
       sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack compute service set --enable   '${i}' nova-compute; nova service-list'
     } >>  /tmp/${i}.log
     done
+  echo "Upgrade of "$@" is in progress ..... [95%]"
 }
 
 ############### This function is to live-migrate workloads from the compute that are going to be upgraded ############
 function host_evacuate_live(){
-    echo "------- Running checks before live-migrating instances from computes --------"
+    echo " live-migrating instances from computes "
     for i in "$@";do
       {
-        echo "----- Checking all ACTIVE instances on compute ${i} -----"
+        echo " ------ Checking all ACTIVE instances on compute ${i} -------"
         sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '${i}' --status ACTIVE --fit-width; for j in $(openstack hypervisor list -c "Hypervisor Hostname" -f value | grep '${i}'); do echo "Instance count for $j :"; openstack hypervisor show $j -c running_vms -f value ; done'
-        echo "----- Checking instances in status other than ACTIVE on compute ${i} ----"
+        echo "------ Checking instances in status other than ACTIVE on compute ${i} -------"
         sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '${i}'  --print-empty | grep -vi active'
 
       # echo " ----- List of  running instances on compute ${i} ----"
       # sudo salt -C ''${i}*'' cmd.run "virsh list --all |grep running"
-       echo " ------ Live evacuate all instances on compute ${i} ------"
+       echo "-----  Live evacuate all instances on compute ${i} ------"
        # sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; nova host-evacuate-live '${i}' '
        } >>  /tmp/${i}.log
- # sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; nova host-evacuate-live '${i}' '
     done
-
+    echo "Upgrade of "$@" is in progress ..... [50%]"
 }
 
 ############## This function is to provide live-migration options ###############
 function check_instances_status(){
 for i in "$@" ; do
- echo " ------ Checking instance status in ${i} -----"
+ echo " Checking instance status in ${i} "
  {
 #  sudo salt -C 'ctl01*' cmd.run '. /root/keystonercv3; for status in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -vi active | awk '"'NR >2 $4{print \$4}'"') ;do if [ "$status" = "SUSPENDED" ]; then for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i suspended | awk '"'$2{print \$2}'"');do echo " ---- Resuming $instance ----"; nova resume $instance; done;  elif [ "$status" = "SHUTOFF" ]; then for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i shutoff |awk '"'$2{print \$2}'"') ; do  echo " ---- Migrating $instance -----"; nova migrate --poll $instance; nova resize-confirm $instance;done;fi; done'
  sudo salt -C 'ctl01*' cmd.run '. /root/keystonercv3;
@@ -142,19 +146,21 @@ for i in "$@" ; do
               done
            elif [ "$status" = "SHUTOFF" ]; then
               for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i shutoff |awk '"'$2{print \$2}'"') ; do
-              	 echo " ---- Migrating $instance -----"
-              	 nova migrate --poll $instance
-              	 nova resize-confirm $instance
+                 echo " ---- Migrating $instance -----"
+                 nova migrate --poll $instance
+                 nova resize-confirm $instance
               done
             fi
         done'
 } >> /tmp/${i}.log
 done
+echo "Upgrade of "$@" is in progress ..... [20%]"
 }
 
 ##############  Upgrade Compute nodes OS and enable services ##################
 function pipeline_upgrade_compute(){
    for i in "$@";do
+    {
       ssh -q -o "ServerAliveInterval=240" -o "StrictHostKeyChecking=no" ${i} << EOF
         uptime
       echo $hostname
@@ -186,9 +192,9 @@ EOF
 #EOF
 #   fi
 #done
-
-   done
-
+    } >> /tmp/${i}.log
+  done
+echo "Upgrade of "$@" is in progress ..... [20%]"
 }
 
 ####### Exit status #######
@@ -205,8 +211,8 @@ function pre_compute_upgrade(){
    create_log_file  "$@"
    silence_alerts_for_nodes  "$@"
    disable_compute_service  "$@"
-   host_evacuate_live  "$@"
    check_instances_status "$@"
+   host_evacuate_live  "$@"
 }
 function compute_upgrade(){
       pipeline_upgrade_compute  "$@"
