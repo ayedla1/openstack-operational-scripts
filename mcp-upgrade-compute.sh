@@ -159,21 +159,23 @@ for i in "$@" ; do
               done
             fi
         done'
-} >> /tmp/${i}.log
+} &>> /tmp/${i}.log
 done
 echo "Upgrade of "$@" is in progress ..... [20%]"
 }
 
 ##############  Upgrade Compute nodes OS and enable services ##################
 function pipeline_upgrade_compute(){
-max_computes= 3
+max_computes=4
 if [[ $# -le ${max_computes} ]];then
    for i in "$@";do
     {
-      if [[ -z $(sudo salt -C ''${i}*'' cmd.run "virsh list --all --uuid") ]]; then
+      if [[ -n $(sudo salt -C ''${i}*'' cmd.run "virsh list --all --uuid") ]]; then
       ssh -q -o "ServerAliveInterval=240" -o "StrictHostKeyChecking=no" ${i} << EOF
-       uptime
+      trap 'echo "Crucial script running.Press Ctrl-Z to stop and resume later"' HUP INT QUIT
+      uptime
       hostname
+      sleep 2m
       if [[ -z "$(contrail-status)" ]]; then
          echo "contrail is not present"
       fi
@@ -206,24 +208,23 @@ EOF
 #   fi
 #done
      else
-      echo "Still Instances are running on '${i}':" >> /tmp/${i}_upgrade_fail
-      sudo salt -C ''${i}\*'' cmd.run 'virsh list --all --uuid' >>  /tmp/${i}_upgrade_fail
+      echo "Still Instances are running on '${i}': $(sudo salt -C ''${i}\*'' cmd.run 'virsh list --all --uuid')" >>  /tmp/${i}_upgrade_fail
     fi
     }&  >> /tmp/${i}.log
   done
+  wait
 else
 echo "Max computes are only 3 to upgrade"
 fi
 echo "Upgrade of "$@" is in progress ..... [80%]"
-wait -n
 }
 
 
 ####### Exit status #######
 function exit_status(){
-  compute_disabled=$(sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack compute service list | grep -i disabled')
-  if [[ -n $compute-disabled ]]; then
-  echo $compute-disabled
+  compute_disabled=$(sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack compute service list | grep -i disabled' 2> /dev/null )
+  if [[ -n $compute_disabled ]]; then
+  echo $compute_disabled
   fi
   silence_stillPresent=$(curl -s http://"$url":15011/api/v1/silences | jq -r  '.data[]|select(.createdBy == "Upgrade Script")|select(.status.state == "active")|.id')
   if [[ -n $silence_stillPresent ]]; then
