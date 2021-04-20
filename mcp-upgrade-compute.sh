@@ -4,12 +4,17 @@
 ############
 printf "Make sure to run the script from salt-master node\n"
 printf "Recommended to run the script in a  SCREEN or TMUX session\n"
+if [[ $(id -u) -eq 0 ]]
+then
+  echo "Run the script under your user.Please don't run as root"
+  exit 1
+fi
 exec > >(tee -ia /tmp/script.log)
 
 ######## Trap unexpected signals ######
 trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
-trap 'echo "Script was stopped.\"${last_command}\" command  with exit code $? ."; exit_status' 0 1 2 3 EXIT
-#trap 'echo "Crucial script running.Press Ctrl-Z to stop and resume later"' HUP INT QUIT
+trap 'echo "Script was stopped.\"${last_command}\" command  with exit code $? ."; exit_status' EXIT
+trap 'echo "Crucial script running.Press Ctrl-Z to stop and resume later"' HUP INT QUIT
 ########### Input arguments ############
 function start_script(){
 if  [[  $# == 0 ]];  then
@@ -55,14 +60,15 @@ function delete_log_file(){
 ########## Save log files created by script #######
 function save_log_file(){
    mkdir /tmp/upgrade-compute-script.log-$(date  +%Y%m%d-%H%M)
-   cd /tmp/upgrade-compute-script.log-$(date -u +%Y%m%d-%H%M)
+   cd /tmp/upgrade-compute-script.log-$(date  +%Y%m%d-%H%M)
    for i in "$@"; do
-      tar -cvzf /tmp/${i}.tar.gz /tmp/${i}.log
-      mv /tmp/${i}.tar.gz .
-    #  rm -f /tmp/${i}.log
+      mv /tmp/${i}.log .
+      mv /tmp/${i}_*  .   &> /dev/null
+    #  tar -cvzf ${i}.tar.gz ${i}.log
    done
-   cd
-   echo "Upgrade of "$@" is in progress ..... [100%]"
+   cd &> /dev/null
+   echo "Logs related to each compute node can be found in /tmp/upgrade-compute-script.log-$(date  +%Y%m%d-%H%M)"
+   echo "Upgrade of "$@" is Completed ..... [100%]"
 }
 
 ########### This function is for silencing all alerts for a node in AlertManager ###############
@@ -118,7 +124,7 @@ function host_evacuate_live(){
     for i in "$@";do
       {
         echo " ------ Checking all ACTIVE instances on compute ${i} -------"
-        sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '${i}' --status ACTIVE --fit-width; for j in $(openstack hypervisor list -c "Hypervisor Hostname" -f value | grep '${i}'); do echo "Instance count for $j :"; openstack hypervisor show $j -c running_vms -f value ; done'
+        sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '${i}'  --fit-width; for j in $(openstack hypervisor list -c "Hypervisor Hostname" -f value | grep '${i}'); do echo "Instance count for $j :"; openstack hypervisor show $j -c running_vms -f value ; done'
         echo "------ Checking instances in status other than ACTIVE on compute ${i} -------"
         sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '${i}'  --print-empty | grep -vi active'
 
@@ -142,6 +148,7 @@ for i in "$@" ; do
            if [ "$status" = "SUSPENDED" ]; then
               for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i suspended | awk '"'$2{print \$2}'"');do
                 echo " ---- Resuming $instance ----"
+                echo "$instance" >> /tmp/resumed_instances
                 nova resume $instance
               done
            elif [ "$status" = "SHUTOFF" ]; then
@@ -159,11 +166,14 @@ echo "Upgrade of "$@" is in progress ..... [20%]"
 
 ##############  Upgrade Compute nodes OS and enable services ##################
 function pipeline_upgrade_compute(){
+max_computes= 3
+if [[ $# -le ${max_computes} ]];then
    for i in "$@";do
     {
+      if [[ -z $(sudo salt -C ''${i}*'' cmd.run "virsh list --all --uuid") ]]; then
       ssh -q -o "ServerAliveInterval=240" -o "StrictHostKeyChecking=no" ${i} << EOF
-        uptime
-      echo $hostname
+       uptime
+      hostname
       if [[ -z "$(contrail-status)" ]]; then
          echo "contrail is not present"
       fi
@@ -175,7 +185,6 @@ function pipeline_upgrade_compute(){
 #     sudo apt-get -y upgrade
 #     sudo apt-get -y -q --allow-downgrades -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
 #     sudo touch /tmp/rebooting
-#     sudo echo " $hostname is going to be rebooted"
 #     sudo reboot
 EOF
 #sleep 1
@@ -188,21 +197,39 @@ EOF
 #        sudo ceph -s
 #        sudo salt-call state.apply -l quiet --state-verbose=false ceph
 #        sudo salt-call state.apply -l quiet --state-verbose=false nova
+      if [[ -z "$(contrail-status)" ]]; then
+         echo "contrail is not present"
+
+      fi
 #        sudo salt-call state.highstate
 #EOF
 #   fi
 #done
-    } >> /tmp/${i}.log
+     else
+      echo "Still Instances are running on '${i}':" >> /tmp/${i}_upgrade_fail
+      sudo salt -C ''${i}\*'' cmd.run 'virsh list --all --uuid' >>  /tmp/${i}_upgrade_fail
+    fi
+    }&  >> /tmp/${i}.log
   done
-echo "Upgrade of "$@" is in progress ..... [20%]"
+else
+echo "Max computes are only 3 to upgrade"
+fi
+echo "Upgrade of "$@" is in progress ..... [80%]"
+wait -n
 }
+
 
 ####### Exit status #######
 function exit_status(){
-  echo " --- Computes with nova-compute disabled ----"
-  sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack compute service list | grep -i disabled' | tee
-  echo " ---- ID of silences created by the Script ---"
-  curl -s http://"$url":15011/api/v1/silences | jq -r  '.data[]|select(.createdBy == "Upgrade Script")|select(.status.state == "active")|.id' | tee
+  compute_disabled=$(sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack compute service list | grep -i disabled')
+  if [[ -n $compute-disabled ]]; then
+  echo $compute-disabled
+  fi
+  silence_stillPresent=$(curl -s http://"$url":15011/api/v1/silences | jq -r  '.data[]|select(.createdBy == "Upgrade Script")|select(.status.state == "active")|.id')
+  if [[ -n $silence_stillPresent ]]; then
+  echo " ---- ID of silences created by the Script and are still not deleted ---"
+  echo $silence_stillPresent
+  fi
   pidof -x upgrade-compute.sh
 }
 
@@ -223,3 +250,4 @@ function post_compute_upgrade(){
    save_log_file  "$@"
 }
 start_script "$@"
+exit
