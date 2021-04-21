@@ -128,16 +128,17 @@ function host_evacuate_live(){
         echo " ------ Checking all ACTIVE instances on compute ${i} -------"
         sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '"${i}"'  --fit-width; for j in $(openstack hypervisor list -c "Hypervisor Hostname" -f value | grep '"${i}"'); do echo "Instance count for $j :"; openstack hypervisor show $j -c running_vms -f value ; done'
         echo "------ Checking instances in status other than ACTIVE on compute ${i} -------"
-        Still_runningVMs=$(sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '"${i}"'  --print-empty | |grep -viE "active|error" | awk '"'NR>2 $2{print \$2}'"' ' 2> /dev/null)
-        if [[ -z "$Still_runningVMs" ]]; then
+        non_ActiveVMs=$(sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '"${i}"'  --print-empty | |grep -viE "active|error" | awk '"'NR>2 $2{print \$2}'"' ' 2> /dev/null)
+        if [[ -z "${non_activeVMs}" ]]; then
           echo "-----  Live evacuate all instances on compute ${i} ------"
           # sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; nova host-evacuate-live '${i}' '
        else
           echo "--- There are still instances  which are not active or error----"
-          echo "$Still_runningVMs"
+          echo "${non_activeVMs}"
        fi
        } >>  /tmp/"${i}".log
     done
+    wait
     echo "Upgrade of $* is in progress ..... [50%]"
 }
 
@@ -148,23 +149,29 @@ for i in "$@" ; do
  {
 #  sudo salt -C 'ctl01*' cmd.run '. /root/keystonercv3; for status in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -vi active | awk '"'NR >2 $4{print \$4}'"') ;do if [ "$status" = "SUSPENDED" ]; then for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i suspended | awk '"'$2{print \$2}'"');do echo " ---- Resuming $instance ----"; nova resume $instance; done;  elif [ "$status" = "SHUTOFF" ]; then for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i shutoff |awk '"'$2{print \$2}'"') ; do  echo " ---- Migrating $instance -----"; nova migrate --poll $instance; nova resize-confirm $instance;done;fi; done'
  sudo salt -C 'ctl01*' cmd.run '. /root/keystonercv3;
-        for status in $(openstack server list --all-projects --host '"${i}"' -c ID -c Status  --print-empty | grep -vi active | awk '"'NR >2 $4{print \$4}'"') ;do
+        for status in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -vi active | awk '"'NR >2 $4{print \$4}'"') ;do
            if [ "$status" = "SUSPENDED" ]; then
-              for instance in $(openstack server list --all-projects --host '"${i}"' -c ID -c Status  --print-empty | grep -i suspended | awk '"'$2{print \$2}'"');do
-                echo " ---- Resuming $instance ----"
-                echo "$instance" >> /tmp/resumed_instances
+              for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i suspended | awk '"'$2{print \$2}'"');do
+                echo " ---- Resuming $instance ----" >> /tmp/resumed_instances_'"${i}"'
                 nova resume $instance
               done
            elif [ "$status" = "SHUTOFF" ]; then
-              for instance in $(openstack server list --all-projects --host '"${i}"' -c ID -c Status  --print-empty | grep -i shutoff |awk '"'$2{print \$2}'"') ; do
-                 echo " ---- Migrating $instance -----"
-                 nova migrate --poll $instance
-                 nova resize-confirm $instance
+              for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i shutoff |awk '"'$2{print \$2}'"') ; do
+              	 echo " ---- Migrating $instance -----"
+              	 nova migrate --poll $instance
+              	 nova resize-confirm $instance
+              done
+           elif [ "$status" = "PAUSED" ];then
+              for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i paused |awk '"'$2{print \$2}'"') ; do
+                 echo " ---- Unpausing $instance -----"
+                 echo "${instance}" >> /tmp/unpaused_instances_'"${i}"'
+                 nova unpause $instance
               done
             fi
         done'
-} &>> /tmp/"${i}".log
+} &1>> /tmp/${i}.log
 done
+wait
 echo "Upgrade of $* is in progress ..... [20%]"
 }
 
@@ -219,7 +226,7 @@ EOF
   done
   wait
 else
-echo "Max computes are only 3 to upgrade"
+echo "Maximum  are only "${max_computes}" computes to upgrade"
 fi
 echo "Upgrade of $* is in progress ..... [80%]"
 }
