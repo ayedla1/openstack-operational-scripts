@@ -16,7 +16,6 @@ trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
 trap 'echo "Script was stopped.\"${last_command}\" command  with exit code $? ."; exit_status' EXIT
 trap 'echo "Crucial script running.Press Ctrl-Z to stop and resume later"' HUP INT QUIT
 
-
 ########### Input arguments ############
 function start_script(){
 if  [[  $# == 0 ]];  then
@@ -125,29 +124,29 @@ function host_evacuate_live(){
     echo " live-migrating instances from computes "
     for i in "$@";do
       {
-        echo " ------ Checking all ACTIVE instances on compute ${i} -------"
+        echo " ------ Checking  instances on compute ${i} -------"
         sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '"${i}"'  --fit-width; for j in $(openstack hypervisor list -c "Hypervisor Hostname" -f value | grep '"${i}"'); do echo "Instance count for $j :"; openstack hypervisor show $j -c running_vms -f value ; done'
-        echo "------ Checking instances in status other than ACTIVE on compute ${i} -------"
-        non_ActiveVMs=$(sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '"${i}"'  --print-empty | |grep -viE "active|error" | awk '"'NR>2 $2{print \$2}'"' ' 2> /dev/null)
-        if [[ -z "${non_activeVMs}" ]]; then
-          echo "-----  Live evacuate all instances on compute ${i} ------"
-          # sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; nova host-evacuate-live '${i}' '
-       else
-          echo "--- There are still instances  which are not active or error----"
-          echo "${non_activeVMs}"
-       fi
-       } >>  /tmp/"${i}".log
+        echo "------ Checking instances in  ACTIVE state on compute ${i} -------"
+        ActiveVMs=$(sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '"${i}"' --status ACTIVE --fit-width | awk '"'NR>2 $2{print \$2}'"' ' 2> /dev/null)
+        if [[ -n "${ActiveVMs}" ]]; then
+          echo "--- There are no Active instances on compute ${i} ----"
+
+        fi
+       } &1>>  /tmp/"${i}".log
     done
     wait
     echo "Upgrade of $* is in progress ..... [50%]"
 }
 
-############## This function is to verify the VM's status which are not in ACTIVE state ###############
+##############
+#This function is to verify the VM's status which are not in ACTIVE state
+#This function is currently not used in script but can be reserved for future purposes
+#if in case any actions are needed to be performed on VM's in specific status
+###############
 function check_instances_status(){
 for i in "$@" ; do
  echo " Checking instance status in ${i} "
  {
-#  sudo salt -C 'ctl01*' cmd.run '. /root/keystonercv3; for status in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -vi active | awk '"'NR >2 $4{print \$4}'"') ;do if [ "$status" = "SUSPENDED" ]; then for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i suspended | awk '"'$2{print \$2}'"');do echo " ---- Resuming $instance ----"; nova resume $instance; done;  elif [ "$status" = "SHUTOFF" ]; then for instance in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -i shutoff |awk '"'$2{print \$2}'"') ; do  echo " ---- Migrating $instance -----"; nova migrate --poll $instance; nova resize-confirm $instance;done;fi; done'
  sudo salt -C 'ctl01*' cmd.run '. /root/keystonercv3;
         for status in $(openstack server list --all-projects --host '${i}' -c ID -c Status  --print-empty | grep -vi active | awk '"'NR >2 $4{print \$4}'"') ;do
            if [ "$status" = "SUSPENDED" ]; then
@@ -181,7 +180,8 @@ max_computes=4
 if [[ $# -le ${max_computes} ]];then
    for i in "$@";do
     {
-      if [[ -n $(sudo salt -C ''"${i}"*'' cmd.run "virsh list --all --uuid" 2> /dev/null) ]]; then
+      if [[ -n $(sudo salt -C ''"${i}"*'' cmd.run "virsh list --all |grep -i running" 2> /dev/null) ]]; then       ## change to -z after testing
+      services=$(sudo salt -C ''"${i}"*'' pillar.items __reclass__:applications --out=json |jq 'values |.[] | values |.[] | .[]' | tr -d '"' | tr '\n' ' ')
       ssh -q -o "ServerAliveInterval=240" -o "StrictHostKeyChecking=no" "${i}" << 'EOF'
       trap 'echo "Crucial script running.Press Ctrl-Z to stop and resume later"' HUP INT QUIT
       uptime
@@ -197,32 +197,34 @@ if [[ $# -le ${max_computes} ]];then
 #     sudo apt-get update
 #     sudo apt-get -y upgrade
 #     sudo apt-get -y -q --allow-downgrades -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
-#     sudo touch /tmp/rebooting
+#     sudo touch /run/is_rebooted
       sudo echo "$(hostname)" is being rebooted
+      exit
 #     sudo reboot
 EOF
+
 #sleep 1
 #echo "Waiting for the server to accept ssh connection.. "
 #while true; do
 #    nc -i 1 -w 1 ${i} 22 > /dev/null
 #    if [ $? -eq 0 ]; then
-#    ssh -q -o "ServerAliveInterval=240" -o "StrictHostKeyChecking=no" ${1} << EOF
+    ssh -q -o "ServerAliveInterval=240" -o "StrictHostKeyChecking=no" "${1}" << EOF
 #        sudo salt-call state.apply -l quiet --state-verbose=false lldp,rsyslog,ntp,openssh,salt,logrotate,linux
 #        sudo ceph -s
 #        sudo salt-call state.apply -l quiet --state-verbose=false ceph
 #        sudo salt-call state.apply -l quiet --state-verbose=false nova
-      if [[ -z "$(contrail-status)" ]]; then
-         echo "contrail is not present"
-
-      fi
+         echo "${services}"
+         if [[ "$services" == *"rsyslog"* && *"openssh"* && *"linux"* && *"salt"* && *"ntp"* && *"logrotate"* ]]; then
+         echo "it is right"
+         fi
 #        sudo salt-call state.highstate
-#EOF
+EOF
 #   fi
 #done
      else
       echo "Still Instances are running on '${i}': $(sudo salt -C ''"${i}"\*'' cmd.run 'virsh list --all --uuid')" >>  /tmp/"${i}"_upgrade_fail
     fi
-    }&  >> /tmp/'${i}'.log
+    }&  >> /tmp/"${i}".log
   done
   wait
 else
@@ -231,6 +233,53 @@ fi
 echo "Upgrade of $* is in progress ..... [80%]"
 }
 
+################## Jenkins pipeline to upgrade compute #############
+function jenkins_pipeline(){
+for i in "$@"; do
+{
+echo "Run Jenkins piplines"
+host=$(sudo salt "cid01*" pillar.get jenkins:client:master:host --out=txt|awk '{print $2}')
+user=$(sudo salt "cid01*" pillar.get jenkins:client:master:username --out=txt|awk '{print $2}')
+password=$(sudo salt "cid01*" pillar.get jenkins:client:master:password --out=txt|awk '{print $2}')
+port=$(sudo salt "cid01*" pillar.get jenkins:client:master:port --out=txt|awk '{print $2}')
+SALT_MASTER_CREDENTIALS=$(sudo salt "cid01*" pillar.get jenkins:client:job:deploy-upgrade-compute:param:SALT_MASTER_CREDENTIALS:default --out=text|awk '{prrint $2}' )
+SALT_MASTER_URL=$(sudo salt "cid01*" pillar.get jenkins:client:job:deploy-upgrade-compute:param:SALT_MASTER_URL:default --out=text |awk '{print $2}' )
+TARGET_SERVERS="$@"
+OS_DIST_UPGRADE=true
+OS_UPGRADE=true
+INTERACTIVE=false
+
+generate_post_data()
+{
+  cat <<EOF
+json={"parameter": [
+{"name":"INTERACTIVE", "value":"${INTERACTIVE}"},
+{"name":"OS_DIST_UPGRADE", "value":"${OS_DIST_UPGRADE}"},
+{"name":"OS_UPGRADE", "value":"${OS_UPGRADE}"},
+{"name":"SALT_MASTER_CREDENTIALS", "value":"${SALT_MASTER_CREDENTIALS}"},
+{"name":"SALT_MASTER_URL", "value":"${SALT_MASTER_URL}"},
+{"name":"TARGET_SERVERS", "value":"${TARGET_SERVERS}*"}]}
+EOF
+}
+
+echo "Update compute pipeline run"
+job_url=http://$user:$password@$host:$port/job/deploy-upgrade-compute
+job_status_url=${job_url}/lastBuild/api/json
+grep_return_code=0
+curl -X POST $job_url/build --data-urlencode "$(generate_post_data)"
+
+set +e
+while [ $grep_return_code -eq 0 ]
+do
+  sleep 30
+  echo "checking build status..."
+  curl --silent $job_status_url | grep result\":null > /dev/null
+  grep_return_code=$?
+done
+echo "  update finished"
+} >> /tmp/"${i}".log
+done
+}
 
 ####### Exit status #######
 function exit_status(){
@@ -251,11 +300,12 @@ function pre_compute_upgrade(){
    create_log_file  "$@"
    silence_alerts_for_nodes  "$@"
    disable_compute_service  "$@"
-   check_instances_status "$@"
+  # check_instances_status "$@"
    host_evacuate_live  "$@"
 }
 function compute_upgrade(){
-      pipeline_upgrade_compute  "$@"
+     # pipeline_upgrade_compute  "$@"
+     jenkins_pipeline "$@"
 }
 function post_compute_upgrade(){
    delete_silence_alerts_for_nodes   "$@"
