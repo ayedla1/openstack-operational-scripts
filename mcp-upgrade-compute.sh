@@ -128,9 +128,10 @@ function host_evacuate_live(){
         sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '"${i}"'  --fit-width; for j in $(openstack hypervisor list -c "Hypervisor Hostname" -f value | grep '"${i}"'); do echo "Instance count for $j :"; openstack hypervisor show $j -c running_vms -f value ; done'
         echo "------ Checking instances in  ACTIVE state on compute ${i} -------"
         ActiveVMs=$(sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '"${i}"' --status ACTIVE --fit-width | awk '"'NR>2 $2{print \$2}'"' ' 2> /dev/null)
-        if [[ -n "${ActiveVMs}" ]]; then
+        if [[ -z "${ActiveVMs}" ]]; then
           echo "--- There are no Active instances on compute ${i} ----"
-
+        else
+          for Instances in $ActiveVMs; do echo ----$Instances----;done
         fi
        } &1>>  /tmp/"${i}".log
     done
@@ -138,11 +139,11 @@ function host_evacuate_live(){
     echo "Upgrade of $* is in progress ..... [50%]"
 }
 
-##############
+################################################################################################################
 #This function is to verify the VM's status which are not in ACTIVE state
 #This function is currently not used in script but can be reserved for future purposes
 #if in case any actions are needed to be performed on VM's in specific status
-###############
+#################################################################################################################
 function check_instances_status(){
 for i in "$@" ; do
  echo " Checking instance status in ${i} "
@@ -173,9 +174,15 @@ done
 wait
 echo "Upgrade of $* is in progress ..... [20%]"
 }
+###############################################################################################################
 
-##############  Upgrade Compute nodes OS and enable services ##################
-function pipeline_upgrade_compute(){
+###############################################################################################################
+#This function is used to upgrade without Jenkins Pipeline
+#Please verify it before you use
+#You can modify the states to run as you need
+# $services variable in the script gives what states need to be run on compute
+################################################################################################################
+function on_node_upgrade_compute(){
 max_computes=4
 if [[ $# -le ${max_computes} ]];then
    for i in "$@";do
@@ -190,32 +197,27 @@ if [[ $# -le ${max_computes} ]];then
       if [[ -z "$(contrail-status)" ]]; then
          echo "contrail is not present"
       fi
-#     sudo salt-call -l quiet --state-verbose=false saltutil.sync_all
-#     sudo salt-call -l quiet --state-verbose=false saltutil.refresh_pillar
-#     sudo salt-call state.apply -l quiet --state-verbose=false linux.system.repo
-#     sudo export DEBIAN_FRONTEND=noninteractive
-#     sudo apt-get update
-#     sudo apt-get -y upgrade
-#     sudo apt-get -y -q --allow-downgrades -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
-#     sudo touch /run/is_rebooted
+     sudo salt-call -l quiet --state-verbose=false saltutil.sync_all
+     sudo salt-call -l quiet --state-verbose=false saltutil.refresh_pillar
+     sudo salt-call state.apply -l quiet --state-verbose=false linux.system.repo
+     sudo export DEBIAN_FRONTEND=noninteractive
+     sudo apt-get update
+     sudo apt-get -y upgrade
+     sudo apt-get -y -q --allow-downgrades -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
+     sudo touch /run/is_rebooted
       sudo echo "$(hostname)" is being rebooted
-      exit
-#     sudo reboot
+     sudo reboot
 EOF
-
 #sleep 1
 #echo "Waiting for the server to accept ssh connection.. "
 #while true; do
-#    nc -i 1 -w 1 ${i} 22 > /dev/null
+#    nc -i 1 -w 1 "${i}" 22 > /dev/null
 #    if [ $? -eq 0 ]; then
     ssh -q -o "ServerAliveInterval=240" -o "StrictHostKeyChecking=no" "${1}" << EOF
-#        sudo salt-call state.apply -l quiet --state-verbose=false lldp,rsyslog,ntp,openssh,salt,logrotate,linux
-#        sudo ceph -s
-#        sudo salt-call state.apply -l quiet --state-verbose=false ceph
-#        sudo salt-call state.apply -l quiet --state-verbose=false nova
          echo "${services}"
          if [[ "$services" == *"rsyslog"* && *"openssh"* && *"linux"* && *"salt"* && *"ntp"* && *"logrotate"* ]]; then
-         echo "it is right"
+#        sudo salt-call state.apply -l quiet --state-verbose=false rsyslog,ntp,openssh,salt,logrotate,linux
+#        sudo salt-call state.apply -l quiet --state-verbose=false nova
          fi
 #        sudo salt-call state.highstate
 EOF
@@ -223,8 +225,8 @@ EOF
 #done
      else
       echo "Still Instances are running on '${i}': $(sudo salt -C ''"${i}"\*'' cmd.run 'virsh list --all --uuid')" >>  /tmp/"${i}"_upgrade_fail
-    fi
-    }&  >> /tmp/"${i}".log
+     fi
+    } &  >> /tmp/$i.log
   done
   wait
 else
@@ -232,6 +234,7 @@ echo "Maximum  are only "${max_computes}" computes to upgrade"
 fi
 echo "Upgrade of $* is in progress ..... [80%]"
 }
+###############################################################################################################
 
 ################## Jenkins pipeline to upgrade compute #############
 function jenkins_pipeline(){
@@ -242,11 +245,11 @@ host=$(sudo salt "cid01*" pillar.get jenkins:client:master:host --out=txt|awk '{
 user=$(sudo salt "cid01*" pillar.get jenkins:client:master:username --out=txt|awk '{print $2}')
 password=$(sudo salt "cid01*" pillar.get jenkins:client:master:password --out=txt|awk '{print $2}')
 port=$(sudo salt "cid01*" pillar.get jenkins:client:master:port --out=txt|awk '{print $2}')
-SALT_MASTER_CREDENTIALS=$(sudo salt "cid01*" pillar.get jenkins:client:job:deploy-upgrade-compute:param:SALT_MASTER_CREDENTIALS:default --out=text|awk '{prrint $2}' )
+SALT_MASTER_CREDENTIALS=$(sudo salt "cid01*" pillar.get jenkins:client:job:deploy-upgrade-compute:param:SALT_MASTER_CREDENTIALS:default --out=text|awk '{print $2}' )
 SALT_MASTER_URL=$(sudo salt "cid01*" pillar.get jenkins:client:job:deploy-upgrade-compute:param:SALT_MASTER_URL:default --out=text |awk '{print $2}' )
 TARGET_SERVERS="$@"
-OS_DIST_UPGRADE=true
-OS_UPGRADE=true
+OS_DIST_UPGRADE=false
+OS_UPGRADE=false
 INTERACTIVE=false
 
 generate_post_data()
@@ -263,15 +266,16 @@ EOF
 }
 
 echo "Update compute pipeline run"
-job_url=http://$user:$password@$host:$port/job/deploy-upgrade-compute
+job_url=https://$host:$port/job/deploy-upgrade-compute
 job_status_url=${job_url}/lastBuild/api/json
 grep_return_code=0
-curl -X POST $job_url/build --data-urlencode "$(generate_post_data)"
+crumb=$(curl -s -X GET  --user $user:$password  https://$host:$port/crumbIssuer/api/json | jq -r '.crumb')
+curl -s -k -H "Jenkins-Crumb:$crumb" -X POST --user $user:$password  $job_url/build --data-urlencode "$(generate_post_data)"
 
 set +e
 while [ $grep_return_code -eq 0 ]
 do
-  sleep 30
+  sleep 5m
   echo "checking build status..."
   curl --silent $job_status_url | grep result\":null > /dev/null
   grep_return_code=$?
@@ -304,8 +308,7 @@ function pre_compute_upgrade(){
    host_evacuate_live  "$@"
 }
 function compute_upgrade(){
-     # pipeline_upgrade_compute  "$@"
-     jenkins_pipeline "$@"
+    # jenkins_pipeline "$@"
 }
 function post_compute_upgrade(){
    delete_silence_alerts_for_nodes   "$@"
