@@ -215,6 +215,7 @@ echo "Upgrade of $* is in progress ..... [20%]"
 
 ###############################################################################################################
 #This function is used to upgrade without Jenkins Pipeline
+#This function is currently not used in script but can be reserved for future purposes
 #Please verify it before you use
 #You can modify the states to run as you need
 # $services variable in the script gives what states need to be run on compute
