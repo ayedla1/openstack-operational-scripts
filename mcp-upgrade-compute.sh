@@ -10,12 +10,13 @@ then
   exit 1
 fi
 exec > >(tee -ia /tmp/script.log)
-version=$(sudo salt-call pillar.get _param:mcp_minor_version --out=txt | awk '{print $2}' |cut -d '.' -f 3) 2> /dev/null
-if [[ $version -gt 9 ]]; then
-printf "It seems you are using MCP version 2019.2.9 or above\n"
-printf "Please update the script by adding your API token to JENKINS_API_TOKEN variable which can be found on Line 18 in script.\n"
-printf "To get the Jenkins API token Go to Jenkins UI>>admin>>configure>>legacy_api_token\n"
+#version=$(sudo salt-call pillar.get _param:mcp_minor_version --out=txt | awk '{print $2}' |cut -d '.' -f 3) 2> /dev/null
+#if [[ $version -gt 9 ]]; then
+#printf "It seems you are using MCP version 2019.2.9 or above\n"
+#printf "Please update the script by adding your API token to JENKINS_API_TOKEN variable which can be found on Line 17 in script.\n"
+#printf "To get the Jenkins API token Go to Jenkins UI>>admin>>configure>>legacy_api_token\n"
 JENKINS_API_TOKEN=
+#fi
 
 ######## Trap unexpected signals ######
 trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
@@ -26,8 +27,8 @@ trap 'echo "Crucial script running.Press Ctrl-Z to stop and resume later"' HUP I
 function start_script(){
 if  [[  $# == 0 ]];  then
       echo "Usage is: ./upgrade-compute.sh cmp001 cmp002.. cmp**"; exit;
-elif [[ $# -le 4 ]]; then
-      echo "You are trying to Upgrade  $# compute[s]. Make sure before proceeding further"
+elif [[ $# -ge 2 ]] && [[ $# -le 4 ]]; then
+      echo "You are trying to Upgrade  $# computes at the same time. Make sure before proceeding further"
          echo "The Compute nodes that are going to be updated are: $* "
          for i in "$@"; do
            pre_compute_upgrade "${i}"
@@ -37,6 +38,14 @@ elif [[ $# -le 4 ]]; then
          post_compute_upgrade "$@"
 elif [[ $# -gt 5 ]]; then
       echo "Too Many arguments have passed. Upgrade of $# computes on a single stretch would cause heavy load and migration issues."; exit;
+else
+      echo "The Compute nodes that are going to be updated are: $* "
+      for i in "$@"; do
+        pre_compute_upgrade "${i}"
+      done
+      migration_status "$@"
+      compute_upgrade "$@"
+      post_compute_upgrade "$@"
 fi
 }
 
@@ -132,7 +141,7 @@ function live_migrate_instances(){
         else
           for Instance in $ActiveVMs; do
              echo ----$Instance----
-             sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; echo ----live migrating '"${Instance}"'------; nova live-migration --block-migrate '"${Instance}"' ' 2 >&1
+             sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; echo ----live migrating '"${Instance}"'------; nova live-migration --block-migrate '"${Instance}"' '
           done
         fi
        }  >>  /tmp/"${i}".log
@@ -150,6 +159,7 @@ function migration_status(){
    MigratingVms=$(sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '"${i}"' --status MIGRATING --fit-width | awk '"'NR>2 $2{print \$2}'"' ' |sed 1d  2> /dev/null)
         if [[ -z "${MigratingVms}" ]]; then
           echo "--- There are no Migrating instances on compute ${i} ----"
+          echo "$MigratingVms"
           break
         elif [[ $count -gt 36 ]]; then
           echo "--- Waited for 12 hours to complete the migration and it is still not complete on ${i} ---"
@@ -158,11 +168,13 @@ function migration_status(){
         else
           let count++
           echo "waiting for 20 more minutes to let the migration complete"
+          echo "$MigratingVms"
           sleep 20m
         fi
    done
    }&  >> /tmp/"${i}".log
    done
+   wait
 }
 ################################################################################################################
 #This function is to verify the VM's status which are not in ACTIVE state
@@ -205,8 +217,7 @@ echo "Upgrade of $* is in progress ..... [20%]"
 #This function is used to upgrade without Jenkins Pipeline
 #Please verify it before you use
 #You can modify the states to run as you need
-# $services variable in the script gives what states are needed to be run on compute
-###############################################################################################################
+# $services variable in the script gives what states need to be run on compute
 ##############  Upgrade Compute nodes OS and enable services #################################################
 function pipeline_upgrade_compute(){
 max_computes=4
@@ -246,12 +257,12 @@ while true; do
          fi
 #        sudo salt-call state.highstate
 EOF
-#   fi
-#done
+   fi
+done
      else
       echo "Still Instances are running on '${i}': $(sudo salt -C ''"${i}"\*'' cmd.run 'virsh list --all --uuid')" >>  /tmp/"${i}"_upgrade_fail
      fi
-    } &  >> /tmp/$i.log
+    }&  >> /tmp/$i.log
   done
   wait
 else
@@ -265,20 +276,20 @@ echo "Upgrade of $* is in progress ..... [80%]"
 function jenkins_pipeline(){
 max_computes=4
 if [[ $# -le ${max_computes} ]];then
-   for i in "$@";do
-    {
-      if [[ -z $(sudo salt -C ''"${i}"*'' cmd.run "virsh list --all |grep -i running" 2> /dev/null) ]]; then
-        echo "Run Jenkins piplines"
-        host=$(sudo salt "cid01*" pillar.get jenkins:client:master:host --out=txt|awk '{print $2}')
-        user=$(sudo salt "cid01*" pillar.get jenkins:client:master:username --out=txt|awk '{print $2}')
-        password=$(sudo salt "cid01*" pillar.get jenkins:client:master:password --out=txt|awk '{print $2}')
-        port=$(sudo salt "cid01*" pillar.get jenkins:client:master:port --out=txt|awk '{print $2}')
-        SALT_MASTER_CREDENTIALS=$(sudo salt "cid01*" pillar.get jenkins:client:job:deploy-upgrade-compute:param:SALT_MASTER_CREDENTIALS:default --out=text|awk '{print $2}' )
-        SALT_MASTER_URL=$(sudo salt "cid01*" pillar.get jenkins:client:job:deploy-upgrade-compute:param:SALT_MASTER_URL:default --out=text |awk '{print $2}' )
-        TARGET_SERVERS="$@"
-        OS_DIST_UPGRADE=true
-        OS_UPGRADE=true
-        INTERACTIVE=false
+for i in "$@";do
+{
+if [[ -z $(sudo salt -C ''"${i}"*'' cmd.run "virsh list --all |grep -i running" 2> /dev/null |sed 1d) ]]; then
+echo "Run Jenkins piplines"
+host=$(sudo salt "cid01*" pillar.get jenkins:client:master:host --out=txt|awk '{print $2}')
+user=$(sudo salt "cid01*" pillar.get jenkins:client:master:username --out=txt|awk '{print $2}')
+password=$(sudo salt "cid01*" pillar.get jenkins:client:master:password --out=txt|awk '{print $2}')
+port=$(sudo salt "cid01*" pillar.get jenkins:client:master:port --out=txt|awk '{print $2}')
+SALT_MASTER_CREDENTIALS=$(sudo salt "cid01*" pillar.get jenkins:client:job:deploy-upgrade-compute:param:SALT_MASTER_CREDENTIALS:default --out=text|awk '{print $2}' )
+SALT_MASTER_URL=$(sudo salt "cid01*" pillar.get jenkins:client:job:deploy-upgrade-compute:param:SALT_MASTER_URL:default --out=text |awk '{print $2}' )
+TARGET_SERVERS="$@"
+OS_DIST_UPGRADE=true
+OS_UPGRADE=true
+INTERACTIVE=false
 
 generate_post_data()
 {
@@ -293,39 +304,39 @@ json={"parameter": [
 EOF
 }
 
-       echo "Update compute pipeline run"
-       job_url=https://$host:$port/job/deploy-upgrade-compute
-       job_status_url=${job_url}/lastBuild/api/json
-       grep_return_code=0
-       #crumb=$(curl -s -X WGET  --user $user:$password  https://$host:$port/crumbIssuer/api/json | jq -r '.crumb')
-       #curl -s -k -H "Jenkins-Crumb:$crumb" -X POST --user $user:$password  $job_url/build --data-urlencode "$(generate_post_data)"
-       curl -s -k -X POST --user "${user}":"${JENKINS_API_TOKEN}"  $job_url/build --data-urlencode "$(generate_post_data)"
-
-       while [ $grep_return_code -eq 0 ]
-       do
-        sleep 20m
-        echo "checking build status..."
-        curl --silent $job_status_url | grep result
-       result=$(curl --silent $job_status_url | grep result)
-       if [[ "$result" = "SUCCESS" ]] || [[ "$result" = "FAILURE" ]]; then
-        echo "Update of "$@" finished"
-        break
-      else
-       echo "Still Running..."
-      fi
-        grep_return_code=$?
-      done
-     else
-      echo "Still Instances are running on '${i}': $(sudo salt -C ''"${i}"\*'' cmd.run 'virsh list --all --uuid')" >>  /tmp/"${i}"_upgrade_fail
-     fi
-    } &  >> /tmp/$i.log
-  done
-  wait
+echo "Update compute pipeline run"
+job_url=https://$host:$port/job/deploy-upgrade-compute
+job_status_url=${job_url}/lastBuild/api/json
+grep_return_code=0
+#crumb=$(curl -s -X WGET  --user $user:$password  https://$host:$port/crumbIssuer/api/json | jq -r '.crumb')
+#curl -s -k -H "Jenkins-Crumb:$crumb" -X POST --user $user:$password  $job_url/build --data-urlencode "$(generate_post_data)"
+curl -s -k -X POST --user "${user}":"${JENKINS_API_TOKEN}"  $job_url/build --data-urlencode "$(generate_post_data)"
+while [ $grep_return_code -eq 0 ]
+do
+sleep 20m
+echo "checking build status..."
+curl --silent $job_status_url | grep result
+result=$(curl --silent $job_status_url | grep result)
+if [[ "$result" = "SUCCESS" ]] || [[ "$result" = "FAILURE" ]]; then
+echo "Update of "$@" finished"
+break
+else
+echo "Still Running..."
+fi
+grep_return_code=$?
+done
+else
+echo "Still Instances are running on '${i}': $(sudo salt -C ''"${i}"\*'' cmd.run 'virsh list --all --uuid')" >>  /tmp/"${i}"_upgrade_fail
+fi
+} &  >> /tmp/$i.log
+done
+wait
 else
 echo "Maximum  are only "${max_computes}" computes to upgrade"
 fi
-}
+
 echo "Upgrade of $* is in progress ..... [80%]"
+}
 
 ####### Exit status #######
 function exit_status(){
