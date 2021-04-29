@@ -15,7 +15,7 @@ if [[ $version -gt 9 ]]; then
 printf "It seems you are using MCP version 2019.2.9 or above\n"
 printf "Please update the script by adding your API token to JENKINS_API_TOKEN variable which can be found on Line 18 in script.\n"
 printf "To get the Jenkins API token Go to Jenkins UI>>admin>>configure>>legacy_api_token\n"
-JENKINS_API_TOKEN=d3f7f8a72de6a28a2d6418d5aece00c6
+JENKINS_API_TOKEN=
 
 ######## Trap unexpected signals ######
 trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
