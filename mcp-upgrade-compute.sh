@@ -11,12 +11,12 @@ then
 fi
 exec > >(tee -ia /tmp/script.log)
 
-JENKINS_API_TOKEN=
+JENKINS_API_TOKEN=d3f7f8a72de6a28a2d6418d5aece00c6
 
 if [[ -z $JENKINS_API_TOKEN ]];then
 version=$(sudo salt-call pillar.get _param:mcp_minor_version --out=txt | awk '{print $2}') 2> /dev/null
 printf "You are using MCP version $version.\n"
-printf "Please update the script by adding your API token to JENKINS_API_TOKEN variable which can be found on Line 14 in script.\n"
+printf "Please update the script by adding your API token to JENKINS_API_TOKEN variable which can be found on Line 17 in script.\n"
 printf "To get the Jenkins API token Go to Jenkins UI>>admin>>configure>>legacy_api_token\n"
 exit 1
 fi
@@ -96,7 +96,7 @@ function silence_alerts_for_nodes(){
      curl -s   http://"$url":15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Script","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"${i}.*"'"}]}'
      } >>  /tmp/"${i}".log
   done
-  curl -s   http://"$url":15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Script","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"cmp.*"'"},{"isRegex": true,"name": "job","value": "libvirt_qemu_exporter"}]}'
+  curl -s   http://"$url":15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Script","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"cmp.*"'"},{"isRegex": true,"name": "job","value": "libvirt_qemu_exporter"}]}' &> /dev/null
   echo "Upgrade of $* is in progress ..... [10%]"
 }
 
@@ -222,66 +222,7 @@ echo "Upgrade of $* is in progress ..... [20%]"
 }
 ###############################################################################################################
 
-###############################################################################################################
-#This function is used to upgrade without Jenkins Pipeline
-#Please verify it before you use
-#You can modify the states to run as you need
-# $services variable in the script gives what states need to be run on compute
-##############  Upgrade Compute nodes OS and enable services #################################################
-function pipeline_upgrade_compute(){
-max_computes=4
-if [[ $# -le ${max_computes} ]];then
-   for i in "$@";do
-    {
-      if [[ -n $(sudo salt -C ''"${i}"*'' cmd.run "virsh list --all |grep -i running" 2> /dev/null) ]]; then       ## change to -z after testing
-      services=$(sudo salt -C ''"${i}"*'' pillar.items __reclass__:applications --out=json |jq 'values |.[] | values |.[] | .[]' | tr -d '"' | tr '\n' ' ')
-      ssh -q -o "ServerAliveInterval=240" -o "StrictHostKeyChecking=no" "${i}" << EOF
-      trap 'echo "Crucial script running.Press Ctrl-Z to stop and resume later"' HUP INT QUIT
-      uptime
-      #sleep 2m
-      if [[ -z "$(contrail-status)" ]]; then
-         echo "contrail is not present"
-      fi
-     sudo salt-call -l quiet --state-verbose=false saltutil.sync_all
-     sudo salt-call -l quiet --state-verbose=false saltutil.refresh_pillar
-     sudo salt-call state.apply -l quiet --state-verbose=false linux.system.repo
-     sudo export DEBIAN_FRONTEND=noninteractive
-     sudo apt-get update
-     sudo apt-get -y upgrade
-     sudo apt-get -y -q --allow-downgrades -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
-     sudo touch /run/is_rebooted
-      sudo echo "$(hostname)" is being rebooted
-     sudo reboot
-EOF
-sleep 1
-echo "Waiting for the server to accept ssh connection.. "
-while true; do
-    nc -i 1 -w 1 "${i}" 22 > /dev/null
-    if [ $? -eq 0 ]; then
-    ssh -q -o "ServerAliveInterval=240" -o "StrictHostKeyChecking=no" "${1}" << EOF
-         echo "${services}"
-         if [[ "$services" == *"rsyslog"* && *"openssh"* && *"linux"* && *"salt"* && *"ntp"* && *"logrotate"* ]]; then
-#        sudo salt-call state.apply -l quiet --state-verbose=false rsyslog,ntp,openssh,salt,logrotate,linux
-#        sudo salt-call state.apply -l quiet --state-verbose=false nova
-         fi
-#        sudo salt-call state.highstate
-EOF
-   fi
-done
-     else
-      echo "Still Instances are running on '${i}': $(sudo salt -C ''"${i}"\*'' cmd.run 'virsh list --all --uuid')" >>  /tmp/"${i}"_upgrade_fail
-     fi
-    }&  >> /tmp/$i.log
-  done
-  wait
-else
-echo "Maximum  are only "${max_computes}" computes to upgrade"
-fi
-echo "Upgrade of $* is in progress ..... [80%]"
-}
-###############################################################################################################
-
-################## Jenkins pipeline to upgrade compute #############
+################## Jenkins pipeline to upgrade compute ###########################
 function jenkins_pipeline(){
 max_computes=4
 if [[ $# -le ${max_computes} ]];then
@@ -322,12 +263,19 @@ grep_return_code=0
 #crumb=$(curl -s -X WGET  --user $user:$password  https://$host:$port/crumbIssuer/api/json | jq -r '.crumb')
 #curl -s -k -H "Jenkins-Crumb:$crumb" -X POST --user $user:$password  $job_url/build --data-urlencode "$(generate_post_data)"
 curl -s -k -X POST --user "${user}":"${JENKINS_API_TOKEN}"  $job_url/build --data-urlencode "$(generate_post_data)"
-while [ $grep_return_code -eq 0 ]
-do
-sleep 20m
+count=0
+while true;do
+sleep 5m
 echo "checking build status..."
-curl --silent $job_status_url | grep result\":null > /dev/null
-grep_return_code=$?
+result=$(curl --silent --user "${user}":"${password}" $job_status_url | jq -r '.result')
+if [[ $result == "SUCCESS" ]] || [[ $result == "FAILURE" ]];then
+echo "Pipeline run is a $result"
+break
+else
+printf "Pipeline is still running...\n"
+printf "Waiting for 5mins more...\n"
+let count++
+fi
 done
 echo "Update finished..."
 else
