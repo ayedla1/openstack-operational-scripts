@@ -16,7 +16,7 @@ JENKINS_API_TOKEN=d3f7f8a72de6a28a2d6418d5aece00c6
 if [[ -z $JENKINS_API_TOKEN ]];then
 version=$(sudo salt-call pillar.get _param:mcp_minor_version --out=txt | awk '{print $2}') 2> /dev/null
 printf "You are using MCP version $version.\n"
-printf "Please update the script by adding your API token to JENKINS_API_TOKEN variable which can be found on Line 17 in script.\n"
+printf "Please update the script by adding your API token to JENKINS_API_TOKEN variable. \n"
 printf "To get the Jenkins API token Go to Jenkins UI>>admin>>configure>>legacy_api_token\n"
 exit 1
 fi
@@ -93,22 +93,24 @@ function silence_alerts_for_nodes(){
   for i in "$@"; do
      {
      echo "------- Silencing all alerts for node ${i} -------"
-     curl -s   http://"$url":15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Script","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"${i}.*"'"}]}'
-     } >>  /tmp/"${i}".log
-  done
-  curl -s   http://"$url":15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Script","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"cmp.*"'"},{"isRegex": true,"name": "job","value": "libvirt_qemu_exporter"}]}' &> /dev/null
+  computesilencedId[${i}]=$(curl -s   http://"$url":15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Script","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"${i}.*"'"}]}' | jq -r '.data.silenceId')
+  libvirtsilencedId[${i}]=$(curl -s   http://"$url":15011/api/v1/silences -X POST -d '{"comment": "silence","createdBy": "Upgrade Script","startsAt": "'"${starts}"'", "endsAt": "'"${end}"'","matchers": [{"isRegex": true,"name": "host","value": "'"cmp.*"'"},{"isRegex": true,"name": "job","value": "libvirt_qemu_exporter"}]}' | jq -r '.data.silenceId')
+    }
+ done
   echo "Upgrade of $* is in progress ..... [10%]"
 }
 
-############ Delete all the silences created By this upgrade script ###############
+############ Delete all the silences set for a node By this upgrade script ###############
 function delete_silence_alerts_for_nodes(){
-  for i ; do {
+  for i in "$@"; do {
   echo " Deleting the silence created for the node ${i} by the script earlier "
-  curl -s http://"$url":15011/api/v1/silences | jq -r  '.data[]|select(.createdBy == "Upgrade Script")|select(.status.state == "active")|.id' | xargs -I {} curl -X DELETE http://"$url":15011/api/v1/silence/{}
-   }  &>>  /tmp/"${i}".log
+  curl -X DELETE http://"$url":15011/api/v1/silence/"${computesilencedId[${i}]}" >> /tmp/"${i}".log
+  curl -X DELETE http://"$url":15011/api/v1/silence/"${libvirtsilencedId[${i}]}" >> /tmp/"${i}".log
+  }
  done
   echo "Upgrade of $* is in progress ..... [85%]"
 }
+
 
 ############## This function is to disable nova-compute service for the compute nodes #############
 function disable_compute_service(){
@@ -172,7 +174,8 @@ function migration_status(){
           break
         else
           let count++
-          echo "waiting for 20 more minutes to let the migration complete"
+          echo "waiting for 10 more minutes to let the migration complete"
+          date
           sudo salt -C '*ctl02*' cmd.run '. /root/keystonercv3; nova list --all-tenants --host '"${i}"' --fields id,name,status'
         # echo "$MigratingVms"
           sleep 10m
@@ -222,7 +225,8 @@ echo "Upgrade of $* is in progress ..... [20%]"
 }
 ###############################################################################################################
 
-################## Jenkins pipeline to upgrade compute ###########################
+
+################## Jenkins pipeline to upgrade compute #############
 function jenkins_pipeline(){
 max_computes=4
 if [[ $# -le ${max_computes} ]];then
@@ -230,7 +234,7 @@ echo "Starting Jenkins Pipeline..."
 for i in "$@";do
 {
 #if [[ -z $(sudo salt -C ''"${i}"*'' cmd.run "virsh list --all |grep -i running" 2> /dev/null |sed 1d) ]]; then
-if [[ -z $(sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '"${i}"' --status ACTIVE --fit-width | awk '"'NR>2 $2{print \$2}'"' ' |sed 1d  2> /dev/null) ]]; then
+if [[ -z $(sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; openstack server list --all-projects --host '"${i}"' |grep -iE "active|migrating"  | awk '"' $2{print \$2}'"' ' |sed 1d  2> /dev/null) ]]; then
 echo "Run Jenkins piplines"
 host=$(sudo salt "cid01*" pillar.get jenkins:client:master:host --out=txt|awk '{print $2}')
 user=$(sudo salt "cid01*" pillar.get jenkins:client:master:username --out=txt|awk '{print $2}')
@@ -263,6 +267,7 @@ grep_return_code=0
 #crumb=$(curl -s -X WGET  --user $user:$password  https://$host:$port/crumbIssuer/api/json | jq -r '.crumb')
 #curl -s -k -H "Jenkins-Crumb:$crumb" -X POST --user $user:$password  $job_url/build --data-urlencode "$(generate_post_data)"
 curl -s -k -X POST --user "${user}":"${JENKINS_API_TOKEN}"  $job_url/build --data-urlencode "$(generate_post_data)"
+
 count=0
 while true;do
 sleep 5m
@@ -282,7 +287,10 @@ else
 echo "Still Instances are running on '${i}': $(sudo salt -C ''"${i}"\*'' cmd.run 'virsh list --all --uuid')" >>  /tmp/"${i}"_upgrade_fail
 fi
 }&  >> /tmp/$i.log
-wait
+pids[${i}]=$!
+done
+for i in "$@" ; do
+wait -n "${pids[${i}]}"
 done
 else
 echo "Maximum  are only "${max_computes}" computes to upgrade"
