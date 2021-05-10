@@ -11,7 +11,7 @@ then
 fi
 exec > >(tee -ia /tmp/script.log)
 
-JENKINS_API_TOKEN=d3f7f8a72de6a28a2d6418d5aece00c6
+JENKINS_API_TOKEN=
 
 if [[ -z $JENKINS_API_TOKEN ]];then
 version=$(sudo salt-call pillar.get _param:mcp_minor_version --out=txt | awk '{print $2}') 2> /dev/null
