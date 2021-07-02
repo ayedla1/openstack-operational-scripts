@@ -11,15 +11,15 @@ then
 fi
 exec > >(tee -ia /tmp/script.log)
 
-JENKINS_API_TOKEN=
+JENKINS_API_TOKEN=<Add your Jenkins API Token HERE>
 
-if [[ -z $JENKINS_API_TOKEN ]];then
-version=$(sudo salt-call pillar.get _param:mcp_minor_version --out=txt | awk '{print $2}') 2> /dev/null
-printf "You are using MCP version $version.\n"
-printf "Please update the script by adding your API token to JENKINS_API_TOKEN variable. \n"
-printf "To get the Jenkins API token Go to Jenkins UI>>admin>>configure>>legacy_api_token\n"
-exit 1
-fi
+#if [[ -z $JENKINS_API_TOKEN ]];then
+#version=$(sudo salt-call pillar.get _param:mcp_minor_version --out=txt | awk '{print $2}') 2> /dev/null
+#printf "You are using MCP version $version.\n"
+#printf "Please update the script by adding your API token to JENKINS_API_TOKEN variable. \n"
+#printf "To get the Jenkins API token Go to Jenkins UI>>admin>>configure>>legacy_api_token\n"
+#exit 1
+#fi
 
 
 ######## Trap unexpected signals ######
@@ -52,12 +52,15 @@ else
       post_compute_upgrade "$@"
 fi
 }
-
+declare -A computesilencedId
+declare -A libvirtsilencedId
+declare -A migration_status
+declare -A pipeline_status
 ########### Create log files speific to arguments provided ###########
 function create_log_file(){
 echo " Creating log files for each node in /tmp/ "
   for i in "$@"; do
-     touch /tmp/${i}.log
+     touch /tmp/"${i}".log
      done
 echo "Upgrade of $* is in progress ..... [1%]"
 }
@@ -87,7 +90,8 @@ function save_log_file(){
 ########### This function is for silencing all alerts for a node in AlertManager ###############
 function silence_alerts_for_nodes(){
   echo "silencing all alerts from nodes $* for 3 hours"
-  url=$(sudo salt-call pillar.get linux:network:host:mon:address --out txt | awk '{print $2}')
+#  url=$(sudo salt-call pillar.get linux:network:host:mon:address --out txt | awk '{print $2}') 2>&1
+  url=$(grep mon /etc/hosts | awk 'NR==1{print $1}')
   starts=$(date -u  '+%FT%T.%3NZ')
   end=$(date -u -d '+3 hour' '+%FT%T.%3NZ')
   for i in "$@"; do
@@ -104,8 +108,8 @@ function silence_alerts_for_nodes(){
 function delete_silence_alerts_for_nodes(){
   for i in "$@"; do {
   echo " Deleting the silence created for the node ${i} by the script earlier "
-  curl -X DELETE http://"$url":15011/api/v1/silence/"${computesilencedId[${i}]}" >> /tmp/"${i}".log
-  curl -X DELETE http://"$url":15011/api/v1/silence/"${libvirtsilencedId[${i}]}" >> /tmp/"${i}".log
+  curl -X DELETE http://"$url":15011/api/v1/silence/"${computesilencedId[${i}]}" >> /tmp/"${i}".log 2>&1
+  curl -X DELETE http://"$url":15011/api/v1/silence/"${libvirtsilencedId[${i}]}" >> /tmp/"${i}".log 2>&1
   }
  done
   echo "Upgrade of $* is in progress ..... [85%]"
@@ -148,7 +152,7 @@ function live_migrate_instances(){
         else
           for Instance in $ActiveVMs; do
              echo ----$Instance----
-             sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; echo ----live migrating '"${Instance}"'------; nova live-migration --block-migrate '"${Instance}"' '
+             sudo salt -C '*ctl01*' cmd.run '. /root/keystonercv3; echo ----live migrating '"${Instance}"'------; nova live-migration  '"${Instance}"' '
           done
         fi
        }  >>  /tmp/"${i}".log
@@ -181,11 +185,11 @@ function migration_status(){
           sleep 10m
         fi
    done
-    }&  >> /tmp/"{i}".log
-    pids[${i}]=$!
+    }&  >> /tmp/"${i}".log
+    migration_status[${i}]=$!
     done
    for i in "$@" ; do
-    wait -n "${pids[${i}]}"
+    wait -n "${migration_status[${i}]}"
    done
 }
 ################################################################################################################
@@ -247,6 +251,7 @@ OS_DIST_UPGRADE=true
 OS_UPGRADE=true
 INTERACTIVE=false
 
+
 generate_post_data()
 {
   cat <<EOF
@@ -261,7 +266,7 @@ EOF
 }
 
 echo "Update compute pipeline run"
-job_url=https://$host:$port/job/deploy-upgrade-compute
+job_url=https://${host}:${port}/job/deploy-upgrade-compute
 job_status_url=${job_url}/lastBuild/api/json
 grep_return_code=0
 #crumb=$(curl -s -X WGET  --user $user:$password  https://$host:$port/crumbIssuer/api/json | jq -r '.crumb')
@@ -278,19 +283,21 @@ echo "Pipeline run is a $result"
 break
 else
 printf "Pipeline is still running...\n"
+date
 printf "Waiting for 5mins more...\n"
 let count++
 fi
 done
 echo "Update finished..."
 else
+echo "Not starting the compute upgrade pipeline as Instances are still running on compute '"${i}"'. Check log directory for more Info"
 echo "Still Instances are running on '${i}': $(sudo salt -C ''"${i}"\*'' cmd.run 'virsh list --all --uuid')" >>  /tmp/"${i}"_upgrade_fail
 fi
 }&  >> /tmp/$i.log
-pids[${i}]=$!
+pipeline_status[${i}]=$!
 done
 for i in "$@" ; do
-wait -n "${pids[${i}]}"
+wait -n "${pipeline_status[${i}]}"
 done
 else
 echo "Maximum  are only "${max_computes}" computes to upgrade"
@@ -318,14 +325,14 @@ function pre_compute_upgrade(){
    create_log_file  "$@"
    silence_alerts_for_nodes  "$@"
    disable_compute_service  "$@"
-   live_migrate_instances  "$@"
+   live_migrate_instances "$@"
 }
 function compute_upgrade(){
    jenkins_pipeline "$@"
 }
 function post_compute_upgrade(){
    delete_silence_alerts_for_nodes   "$@"
- #  enable_compute_service   "$@"
+   enable_compute_service   "$@"
    save_log_file  "$@"
 }
 start_script "$@"
